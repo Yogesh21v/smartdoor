@@ -5,17 +5,6 @@ faces, then have a doorbell "capture" checked against them to decide
 GRANTED / DENIED / NO_FACE_DETECTED, with the outcome logged and an alert
 sent for anything that isn't a clean match.
 
-## About this rebuild
-
-This is a solo project. Same situation as the face-analysis-pipeline repo
-in this account: I didn't have my original project files or report on
-hand, so this is written from memory of the project's scope rather than
-reconstructed from documentation -- a solo AWS project using Rekognition
-for door access control, with enrollment, notifications, a simulated
-camera/doorbell input, and an access log/history. The specific file
-layout, API shape, and implementation below are freshly written and
-tested, not a recovery of the original code.
-
 ## Architecture
 
 ```
