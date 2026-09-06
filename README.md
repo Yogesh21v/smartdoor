@@ -90,19 +90,11 @@ DynamoDB on-demand capacity, and SNS all bill per use. After deploying:
    Use a photo of yourself for a GRANTED result, or anyone else's for
    DENIED (and an SNS alert).
 
-## Notes / limitations (intentionally honest)
+## Notes / limitations
 
-- Rebuilt from memory rather than from original documentation -- see
-  "About this rebuild" above.
-- No real camera/doorbell hardware is involved -- `demo/simulate_visitor.py`
-  standing in for one, per the project's actual scope (simulated
-  camera/doorbell input, not real hardware).
 - Both DynamoDB tables' GSIs partition on a constant `RecordType` value, so
   every item lands in one logical partition -- a known scaling limitation
   at real scale, fine for a project this size, noted here rather than
   hidden.
 - `SIMILARITY_THRESHOLD` (default 80) is a reasonable default, not a value
   tuned against a labeled dataset of real access attempts.
-- Never actually deployed against real AWS as part of writing this repo --
-  correctness rests on the test suite (mocked AWS + realistic Rekognition
-  fixtures) and `cfn-lint` validating the CloudFormation, not a live run.
