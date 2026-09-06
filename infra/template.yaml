@@ -1,0 +1,215 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  SmartDoor -- a face-recognition access control system. An enrollment
+  photo indexes a person into a Rekognition face collection; a doorbell
+  capture is searched against that collection to decide GRANTED/DENIED,
+  logs the outcome in DynamoDB, and alerts over SNS for anything that
+  isn't a clean match.
+
+Parameters:
+  CollectionId:
+    Type: String
+    Default: smartdoor-authorized-faces
+    Description: >
+      Rekognition face collection name. CloudFormation has no native
+      resource type for a Rekognition collection, so it must be created
+      once before first deploy with scripts/setup_collection.py (see the
+      README) -- this parameter just has to match whatever name that
+      script used.
+  SimilarityThreshold:
+    Type: Number
+    Default: 80
+    Description: Minimum face-match similarity (0-100) to grant access.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 30
+    MemorySize: 256
+
+Resources:
+  MediaBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "smartdoor-media-${AWS::AccountId}-${AWS::Region}"
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [PUT, GET]
+            AllowedOrigins: ["*"]
+            AllowedHeaders: ["*"]
+
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: smartdoor-alerts
+      DisplayName: SmartDoor Alerts
+
+  AuthorizedPeopleTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: AuthorizedPeople
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: FaceId
+          AttributeType: S
+        - AttributeName: RecordType
+          AttributeType: S
+        - AttributeName: EnrolledAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: FaceId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: EnrollTimeIndex
+          KeySchema:
+            - AttributeName: RecordType
+              KeyType: HASH
+            - AttributeName: EnrolledAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  AccessLogTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: AccessLog
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: LogId
+          AttributeType: S
+        - AttributeName: RecordType
+          AttributeType: S
+        - AttributeName: Timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: LogId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: AccessTimeIndex
+          KeySchema:
+            - AttributeName: RecordType
+              KeyType: HASH
+            - AttributeName: Timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  EnrollFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/enroll_lambda/
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          AUTHORIZED_PEOPLE_TABLE: !Ref AuthorizedPeopleTable
+          COLLECTION_ID: !Ref CollectionId
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref MediaBucket
+        - DynamoDBWritePolicy:
+            TableName: !Ref AuthorizedPeopleTable
+        - Statement:
+            - Effect: Allow
+              Action: rekognition:IndexFaces
+              Resource: "*"
+      Events:
+        EnrollmentUploaded:
+          Type: S3
+          Properties:
+            Bucket: !Ref MediaBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: enroll/
+
+  RecognizeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/recognize_lambda/
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          ACCESS_LOG_TABLE: !Ref AccessLogTable
+          COLLECTION_ID: !Ref CollectionId
+          ALERT_TOPIC_ARN: !Ref AlertsTopic
+          SIMILARITY_THRESHOLD: !Ref SimilarityThreshold
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref MediaBucket
+        - DynamoDBWritePolicy:
+            TableName: !Ref AccessLogTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt AlertsTopic.TopicName
+        - Statement:
+            - Effect: Allow
+              Action: rekognition:SearchFacesByImage
+              Resource: "*"
+      Events:
+        CaptureUploaded:
+          Type: S3
+          Properties:
+            Bucket: !Ref MediaBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: captures/
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/api_lambda/
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          ACCESS_LOG_TABLE: !Ref AccessLogTable
+          AUTHORIZED_PEOPLE_TABLE: !Ref AuthorizedPeopleTable
+          MEDIA_BUCKET: !Ref MediaBucket
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref AccessLogTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref AuthorizedPeopleTable
+        - S3WritePolicy:
+            BucketName: !Ref MediaBucket
+      Events:
+        ListAccessLog:
+          Type: Api
+          Properties:
+            Path: /access-log
+            Method: GET
+        GetAccessLogEntry:
+          Type: Api
+          Properties:
+            Path: /access-log/{logId}
+            Method: GET
+        ListAuthorizedPeople:
+          Type: Api
+          Properties:
+            Path: /authorized-people
+            Method: GET
+        EnrollUrl:
+          Type: Api
+          Properties:
+            Path: /enroll-url
+            Method: POST
+        CaptureUrl:
+          Type: Api
+          Properties:
+            Path: /capture-url
+            Method: POST
+
+Outputs:
+  MediaBucketName:
+    Description: "S3 bucket for enrollment photos (enroll/) and doorbell captures (captures/)"
+    Value: !Ref MediaBucket
+  AlertsTopicArn:
+    Description: "Subscribe your email/SMS to this topic to receive SmartDoor alerts"
+    Value: !Ref AlertsTopic
+  ApiUrl:
+    Description: "API Gateway base URL"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
